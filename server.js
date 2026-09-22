@@ -26,7 +26,11 @@ wss.on('connection', (ws) => {
 
     ws.on('message', (message) => {
         try {
-            const data = JSON.parse(message);
+            // Očištění od nulových bajtů (\0) z GameMakeru a ořezání mezer
+            const rawStr = message.toString().replace(/\0/g, '').trim();
+            if (!rawStr) return;
+
+            const data = JSON.parse(rawStr);
             handleClientMessage(ws, data);
         } catch (err) {
             console.error(`[ERROR] Neplatný JSON od ${ws.id}:`, err.message);
