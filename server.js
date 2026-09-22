@@ -1,18 +1,18 @@
 const { WebSocketServer, WebSocket } = require('ws');
 
-// Render předává port automaticky přes proměnnou prostředí process.env.PORT
+// Render odovzdáva port automaticky cez premenné prostredia process.env.PORT
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocketServer({ port: PORT });
 
-console.log(`[SERVER] Tankový server běží na portu ${PORT}`);
+console.log(`[SERVER] Tankový server beží na porte ${PORT}`);
 
-// Globální stav
-let waitingQueue = [];      // Hráči čekající na zápas
+// Globálny stav
+let waitingQueue = [];      // Hráči čakajúci na zápas
 let queueTimer = null;       // Odpočet matchmakingu
-let matchCounter = 1;        // ID zápasů
-const matches = new Map();   // Aktivní zápasy { matchId: matchData }
+let matchCounter = 1;        // ID zápasov
+const matches = new Map();   // Aktívne zápasy { matchId: matchData }
 
-// Konstanta časového limitu (30 sekund)
+// Konštanta časového limitu (30 sekúnd)
 const MATCHMAKING_TIMEOUT_MS = 30000;
 
 wss.on('connection', (ws) => {
@@ -20,13 +20,13 @@ wss.on('connection', (ws) => {
     ws.matchId = null;
     ws.team = null;
 
-    console.log(`[CONNECT] Připojen hráč: ${ws.id}`);
+    console.log(`[CONNECT] Pripojený hráč: ${ws.id}`);
 
     sendTo(ws, { type: 'INIT', playerId: ws.id });
 
     ws.on('message', (message) => {
         try {
-            // Očištění od nulových bajtů (\0) z GameMakeru a ořezání mezer
+            // Očistenie od nulových bajtov (\0) z GameMakeru a orezanie medzier
             const rawStr = message.toString().replace(/\0/g, '').trim();
             if (!rawStr) return;
 
@@ -38,7 +38,7 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        console.log(`[DISCONNECT] Odpojen hráč: ${ws.id}`);
+        console.log(`[DISCONNECT] Odpojený hráč: ${ws.id}`);
         handleDisconnect(ws);
     });
 });
@@ -54,40 +54,44 @@ function handleClientMessage(ws, data) {
             break;
 
         case 'PLAYER_UPDATE':
+        case 'PLAYER_MOVED':
             if (ws.matchId && matches.has(ws.matchId)) {
+                // Posielame späť oba typy/kľúče pre maximálnu kompatibilitu s klientskym kódom
                 broadcastToMatch(ws.matchId, {
-                    type: 'PLAYER_MOVED',
+                    type: 'PLAYER_UPDATE',
                     playerId: ws.id,
                     x: data.x,
                     y: data.y,
-                    hullAngle: data.hullAngle,
-                    turretAngle: data.turretAngle,
-                    speed: data.speed
+                    hullAngle: data.hullAngle !== undefined ? data.hullAngle : data.angle,
+                    turretAngle: data.turretAngle !== undefined ? data.turretAngle : data.angle,
+                    tankId: data.tankId || data.tank_id || "fcm36",
+                    speed: data.speed || 0
                 }, ws.id);
             }
             break;
 
         case 'SHOOT':
+        case 'PLAYER_SHOOT':
             if (ws.matchId && matches.has(ws.matchId)) {
                 broadcastToMatch(ws.matchId, {
-                    type: 'BULLET_FIRED',
+                    type: 'PLAYER_SHOOT',
                     playerId: ws.id,
                     x: data.x,
                     y: data.y,
                     angle: data.angle,
-                    damage: data.damage
-                });
+                    damage: data.damage || 10
+                }, ws.id);
             }
             break;
 
         case 'TAKE_DAMAGE':
             if (ws.matchId && matches.has(ws.matchId)) {
                 broadcastToMatch(ws.matchId, {
-                    type: 'PLAYER_HIT',
+                    type: 'TAKE_DAMAGE',
                     targetId: data.targetId,
                     attackerId: ws.id,
                     damage: data.damage,
-                    remainingHp: data.remainingHp
+                    newHp: data.remainingHp !== undefined ? data.remainingHp : data.newHp
                 });
             }
             break;
@@ -98,12 +102,12 @@ function addToQueue(ws) {
     if (waitingQueue.includes(ws) || ws.matchId) return;
 
     waitingQueue.push(ws);
-    console.log(`[MM] Hráč ${ws.id} vstoupil do fronty. Celkem ve frontě: ${waitingQueue.length}`);
+    console.log(`[MM] Hráč ${ws.id} vstúpil do fronty. Celkovo vo fronte: ${waitingQueue.length}`);
 
     sendTo(ws, { type: 'QUEUE_JOINED', position: waitingQueue.length });
 
     if (waitingQueue.length === 1 && !queueTimer) {
-        console.log(`[MM] Spuštěn 30s odpočet pro vytvoření bitvy...`);
+        console.log(`[MM] Spustený 30s odpočet pre vytvorenie bitky...`);
         queueTimer = setTimeout(() => {
             createMatchFromQueue();
         }, MATCHMAKING_TIMEOUT_MS);
@@ -128,7 +132,7 @@ function removeFromQueue(ws) {
         if (waitingQueue.length === 0 && queueTimer) {
             clearTimeout(queueTimer);
             queueTimer = null;
-            console.log(`[MM] Fronta je prázdná, odpočet zrušen.`);
+            console.log(`[MM] Fronta je prázdna, odpočet zrušený.`);
         } else {
             broadcastQueueStatus();
         }
@@ -139,7 +143,7 @@ function createMatchFromQueue() {
     queueTimer = null;
 
     if (waitingQueue.length < 2) {
-        console.log(`[MM] Nedostatek hráčů pro zápas (méně než 2). Čeká se dál...`);
+        console.log(`[MM] Nedostatok hráčov pre zápas (menej ako 2). Čaká sa ďalej...`);
         if (waitingQueue.length === 1) {
             queueTimer = setTimeout(() => {
                 createMatchFromQueue();
@@ -171,7 +175,7 @@ function createMatchFromQueue() {
         createdAt: Date.now()
     });
 
-    console.log(`[MATCH CREATED] Bitva ${matchId} vytvořena! Týmy: ${redTeam.length} vs ${blueTeam.length}`);
+    console.log(`[MATCH CREATED] Bitka ${matchId} vytvorená! Tímy: ${redTeam.length} vs ${blueTeam.length}`);
 
     playersForMatch.forEach((playerWs) => {
         sendTo(playerWs, {
@@ -215,7 +219,7 @@ function handleDisconnect(ws) {
 
         if (match.players.length === 0) {
             matches.delete(ws.matchId);
-            console.log(`[MATCH CLOSED] Bitva ${ws.matchId} byla ukončena (všichni odešli).`);
+            console.log(`[MATCH CLOSED] Bitka ${ws.matchId} bola ukončená (všetci odišli).`);
         }
     }
 }
