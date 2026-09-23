@@ -11,7 +11,7 @@ let waitingQueue = [];      // Hráči čakajúci na zápas
 let matchCounter = 1;        // ID zápasov
 const matches = new Map();   // Aktívne zápasy { matchId: matchData }
 
-// Pravidelná kontrola matchmakingu každú 1 sekundu (pre postupné rozširovanie Tierov podľa času)
+// Pravidelná kontrola matchmakingu každú 1 sekundu
 setInterval(runMatchmakingLoop, 1000);
 
 wss.on('connection', (ws) => {
@@ -112,7 +112,7 @@ function addToQueue(ws, data) {
     sendTo(ws, { type: 'QUEUE_JOINED', position: waitingQueue.length });
 
     broadcastQueueStatus();
-    runMatchmakingLoop(); // Okamžitá kontrola
+    runMatchmakingLoop();
 }
 
 function removeFromQueue(ws) {
@@ -125,7 +125,7 @@ function removeFromQueue(ws) {
     }
 }
 
-// --- TIER-SPREAD MATCHMAKING LOGIKA ( +-1 AŽ +-2 TIER ) ---
+// --- VYLEPŠENÁ LOGIKA MATCHMAKINGU (MAX 7v7, TIER BALANCE) ---
 function runMatchmakingLoop() {
     if (waitingQueue.length < 2) return;
 
@@ -137,30 +137,43 @@ function runMatchmakingLoop() {
 
         const waitTimeSec = (now - p1.joinedAt) / 1000;
 
-        // Tolerancia rozdielu Tierov podľa času čakania
+        // Tolerancia rozdielu Tierov podľa času čakania najdlhšie čakajúceho hráča
         let maxTierDiff = 0; // 0-3s: Iba rovnaký Tier
         if (waitTimeSec >= 7) {
-            maxTierDiff = 2; // Po 7s: +-2 Tiery
+            maxTierDiff = 2; // Po 7s: max +-2 Tiery
         } else if (waitTimeSec >= 3) {
-            maxTierDiff = 1; // Po 3s: +-1 Tier
+            maxTierDiff = 1; // Po 3s: max +-1 Tier
         }
 
         let matchedGroup = [p1];
+        let minTierInGroup = p1.tier;
+        let maxTierInGroup = p1.tier;
 
-        // Hľadáme ďalších hráčov vyhovujúcich Tier pravidlu
+        // Hľadáme ďalších hráčov
         for (let j = i + 1; j < waitingQueue.length; j++) {
             const p2 = waitingQueue[j];
             if (!p2) continue;
 
-            const tierDifference = Math.abs(p1.tier - p2.tier);
+            // Kontrola, či pridaním p2 neprekročíme maximálny povolený rozpätie (spread) v celej skupine
+            const newMin = Math.min(minTierInGroup, p2.tier);
+            const newMax = Math.max(maxTierInGroup, p2.tier);
 
-            if (tierDifference <= maxTierDiff) {
+            if ((newMax - newMin) <= maxTierDiff) {
                 matchedGroup.push(p2);
-                if (matchedGroup.length >= 14) break; // Maximálny počet hráčov pre zápas
+                minTierInGroup = newMin;
+                maxTierInGroup = newMax;
+
+                // Max 14 hráčov (7 vs 7)
+                if (matchedGroup.length >= 14) break;
             }
         }
 
-        // Ak máme aspoň 2 hráčov na zápas
+        // Pre férové tímy potrebujeme SUDÝ počet hráčov (2, 4, 6, 8, 10, 12, 14)
+        if (matchedGroup.length % 2 !== 0) {
+            matchedGroup.pop(); // Odstránime posledného, aby ostal sudý počet (napr. 3 -> 2, 15 -> 14)
+        }
+
+        // Ak máme aspoň 2 hráčov (1v1 až 7v7)
         if (matchedGroup.length >= 2) {
             // Odstránime vybraných hráčov z fronty
             matchedGroup.forEach(player => {
@@ -168,7 +181,7 @@ function runMatchmakingLoop() {
                 if (idx !== -1) waitingQueue.splice(idx, 1);
             });
 
-            i--; // Úprava indexu cyklu po vymazaní
+            i--; // Úprava indexu po vymazaní
 
             createMatchFromPlayers(matchedGroup);
             broadcastQueueStatus();
@@ -179,19 +192,27 @@ function runMatchmakingLoop() {
 function createMatchFromPlayers(playersForMatch) {
     const matchId = 'match_' + matchCounter++;
 
+    // 1. Zotriedime hráčov podľa Tieru zostupne pre vyváženie tímov
+    const sortedPlayers = [...playersForMatch].sort((a, b) => b.tier - a.tier);
+
     const redTeam = [];
     const blueTeam = [];
 
-    playersForMatch.forEach((playerWs, index) => {
+    // 2. Snake draft rozdelenie (1. do RED, 2. do BLUE, 3. do BLUE, 4. do RED...)
+    // Tým zabezpečíme, že vysoké aj nízke Tiery budú rovnomerne v oboch tímoch
+    sortedPlayers.forEach((playerWs, index) => {
         playerWs.matchId = matchId;
-        
+
         const playerData = {
             id: playerWs.id,
             tankId: playerWs.tankId,
             tier: playerWs.tier
         };
 
-        if (index % 2 === 0) {
+        // Modulo 4 vzor: 0 -> RED, 1 -> BLUE, 2 -> BLUE, 3 -> RED
+        const assignToRed = (index % 4 === 0 || index % 4 === 3);
+
+        if (assignToRed) {
             playerWs.team = 'red';
             playerData.team = 'red';
             redTeam.push(playerData);
@@ -208,7 +229,7 @@ function createMatchFromPlayers(playersForMatch) {
         createdAt: Date.now()
     });
 
-    console.log(`[MATCH CREATED] Bitka ${matchId} vytvorená! Tímy: ${redTeam.length} vs ${blueTeam.length}`);
+    console.log(`[MATCH CREATED] Bitka ${matchId} vytvorená! Tímy: ${redTeam.length} vs ${blueTeam.length} (Max 7v7)`);
 
     playersForMatch.forEach((playerWs) => {
         sendTo(playerWs, {
