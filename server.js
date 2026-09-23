@@ -8,17 +8,19 @@ console.log(`[SERVER] Tankový server beží na porte ${PORT}`);
 
 // Globálny stav
 let waitingQueue = [];      // Hráči čakajúci na zápas
-let queueTimer = null;       // Odpočet matchmakingu
 let matchCounter = 1;        // ID zápasov
 const matches = new Map();   // Aktívne zápasy { matchId: matchData }
 
-// Konštanta časového limitu (30 sekúnd)
-const MATCHMAKING_TIMEOUT_MS = 30000;
+// Pravidelná kontrola matchmakingu každú 1 sekundu (pre postupné rozširovanie Tierov podľa času)
+setInterval(runMatchmakingLoop, 1000);
 
 wss.on('connection', (ws) => {
     ws.id = 'player_' + Math.random().toString(36).substr(2, 9);
     ws.matchId = null;
     ws.team = null;
+    ws.tankId = "fcm36";
+    ws.tier = 1;
+    ws.joinedAt = 0;
 
     console.log(`[CONNECT] Pripojený hráč: ${ws.id}`);
 
@@ -46,7 +48,7 @@ wss.on('connection', (ws) => {
 function handleClientMessage(ws, data) {
     switch (data.type) {
         case 'JOIN_QUEUE':
-            addToQueue(ws);
+            addToQueue(ws, data);
             break;
 
         case 'LEAVE_QUEUE':
@@ -56,7 +58,6 @@ function handleClientMessage(ws, data) {
         case 'PLAYER_UPDATE':
         case 'PLAYER_MOVED':
             if (ws.matchId && matches.has(ws.matchId)) {
-                // Posielame späť oba typy/kľúče pre maximálnu kompatibilitu s klientskym kódom
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
@@ -64,7 +65,7 @@ function handleClientMessage(ws, data) {
                     y: data.y,
                     hullAngle: data.hullAngle !== undefined ? data.hullAngle : data.angle,
                     turretAngle: data.turretAngle !== undefined ? data.turretAngle : data.angle,
-                    tankId: data.tankId || data.tank_id || "fcm36",
+                    tankId: ws.tankId,
                     speed: data.speed || 0
                 }, ws.id);
             }
@@ -98,28 +99,20 @@ function handleClientMessage(ws, data) {
     }
 }
 
-function addToQueue(ws) {
+function addToQueue(ws, data) {
     if (waitingQueue.includes(ws) || ws.matchId) return;
 
+    ws.tankId = data.tankId || data.tank_id || "fcm36";
+    ws.tier = Number(data.tier) || 1;
+    ws.joinedAt = Date.now();
+
     waitingQueue.push(ws);
-    console.log(`[MM] Hráč ${ws.id} vstúpil do fronty. Celkovo vo fronte: ${waitingQueue.length}`);
+    console.log(`[MM] Hráč ${ws.id} vstúpil do fronty s tankom ${ws.tankId} (Tier ${ws.tier}). Celkovo vo fronte: ${waitingQueue.length}`);
 
     sendTo(ws, { type: 'QUEUE_JOINED', position: waitingQueue.length });
 
-    if (waitingQueue.length === 1 && !queueTimer) {
-        console.log(`[MM] Spustený 30s odpočet pre vytvorenie bitky...`);
-        queueTimer = setTimeout(() => {
-            createMatchFromQueue();
-        }, MATCHMAKING_TIMEOUT_MS);
-    }
-
     broadcastQueueStatus();
-
-    if (waitingQueue.length >= 14) {
-        clearTimeout(queueTimer);
-        queueTimer = null;
-        createMatchFromQueue();
-    }
+    runMatchmakingLoop(); // Okamžitá kontrola
 }
 
 function removeFromQueue(ws) {
@@ -128,31 +121,62 @@ function removeFromQueue(ws) {
         waitingQueue.splice(index, 1);
         console.log(`[MM] Hráč ${ws.id} opustil frontu.`);
         sendTo(ws, { type: 'QUEUE_LEFT' });
+        broadcastQueueStatus();
+    }
+}
 
-        if (waitingQueue.length === 0 && queueTimer) {
-            clearTimeout(queueTimer);
-            queueTimer = null;
-            console.log(`[MM] Fronta je prázdna, odpočet zrušený.`);
-        } else {
+// --- TIER-SPREAD MATCHMAKING LOGIKA ( +-1 AŽ +-2 TIER ) ---
+function runMatchmakingLoop() {
+    if (waitingQueue.length < 2) return;
+
+    const now = Date.now();
+
+    for (let i = 0; i < waitingQueue.length; i++) {
+        const p1 = waitingQueue[i];
+        if (!p1) continue;
+
+        const waitTimeSec = (now - p1.joinedAt) / 1000;
+
+        // Tolerancia rozdielu Tierov podľa času čakania
+        let maxTierDiff = 0; // 0-3s: Iba rovnaký Tier
+        if (waitTimeSec >= 7) {
+            maxTierDiff = 2; // Po 7s: +-2 Tiery
+        } else if (waitTimeSec >= 3) {
+            maxTierDiff = 1; // Po 3s: +-1 Tier
+        }
+
+        let matchedGroup = [p1];
+
+        // Hľadáme ďalších hráčov vyhovujúcich Tier pravidlu
+        for (let j = i + 1; j < waitingQueue.length; j++) {
+            const p2 = waitingQueue[j];
+            if (!p2) continue;
+
+            const tierDifference = Math.abs(p1.tier - p2.tier);
+
+            if (tierDifference <= maxTierDiff) {
+                matchedGroup.push(p2);
+                if (matchedGroup.length >= 14) break; // Maximálny počet hráčov pre zápas
+            }
+        }
+
+        // Ak máme aspoň 2 hráčov na zápas
+        if (matchedGroup.length >= 2) {
+            // Odstránime vybraných hráčov z fronty
+            matchedGroup.forEach(player => {
+                const idx = waitingQueue.indexOf(player);
+                if (idx !== -1) waitingQueue.splice(idx, 1);
+            });
+
+            i--; // Úprava indexu cyklu po vymazaní
+
+            createMatchFromPlayers(matchedGroup);
             broadcastQueueStatus();
         }
     }
 }
 
-function createMatchFromQueue() {
-    queueTimer = null;
-
-    if (waitingQueue.length < 2) {
-        console.log(`[MM] Nedostatok hráčov pre zápas (menej ako 2). Čaká sa ďalej...`);
-        if (waitingQueue.length === 1) {
-            queueTimer = setTimeout(() => {
-                createMatchFromQueue();
-            }, MATCHMAKING_TIMEOUT_MS);
-        }
-        return;
-    }
-
-    const playersForMatch = waitingQueue.splice(0, 14);
+function createMatchFromPlayers(playersForMatch) {
     const matchId = 'match_' + matchCounter++;
 
     const redTeam = [];
@@ -160,12 +184,21 @@ function createMatchFromQueue() {
 
     playersForMatch.forEach((playerWs, index) => {
         playerWs.matchId = matchId;
+        
+        const playerData = {
+            id: playerWs.id,
+            tankId: playerWs.tankId,
+            tier: playerWs.tier
+        };
+
         if (index % 2 === 0) {
             playerWs.team = 'red';
-            redTeam.push({ id: playerWs.id, team: 'red' });
+            playerData.team = 'red';
+            redTeam.push(playerData);
         } else {
             playerWs.team = 'blue';
-            blueTeam.push({ id: playerWs.id, team: 'blue' });
+            playerData.team = 'blue';
+            blueTeam.push(playerData);
         }
     });
 
@@ -186,13 +219,6 @@ function createMatchFromQueue() {
             blueTeam: blueTeam
         });
     });
-
-    if (waitingQueue.length > 0) {
-        queueTimer = setTimeout(() => {
-            createMatchFromQueue();
-        }, MATCHMAKING_TIMEOUT_MS);
-        broadcastQueueStatus();
-    }
 }
 
 function broadcastQueueStatus() {
