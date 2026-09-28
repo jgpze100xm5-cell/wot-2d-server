@@ -89,6 +89,7 @@ function handleClientMessage(ws, data) {
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
+                    team: ws.team, // <-- PŘIDÁNO: Server posílá tým hráče
                     x: data.x,
                     y: data.y,
                     hullAngle: data.hullAngle !== undefined ? data.hullAngle : data.angle,
