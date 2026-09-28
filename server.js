@@ -89,7 +89,7 @@ function handleClientMessage(ws, data) {
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
-                    team: ws.team, // <-- PŘIDÁNO: Server posílá tým hráče
+                    team: ws.team,
                     x: data.x,
                     y: data.y,
                     hullAngle: data.hullAngle !== undefined ? data.hullAngle : data.angle,
@@ -209,7 +209,8 @@ function runMatchmakingLoop() {
     const oldestPlayer = waitingQueue[0];
     const waitTimeSec = (now - oldestPlayer.joinedAt) / 1000;
 
-    if (waitingQueue.length < 14 && waitTimeSec < 5) {
+    // Čekáme minimálně 10 sekund na naplnění lobby, pokud ještě nemáme plných 14 hráčů (7v7)
+    if (waitingQueue.length < 14 && waitTimeSec < 10) {
         return; 
     }
 
@@ -219,12 +220,8 @@ function runMatchmakingLoop() {
 
         const pWaitSec = (now - p1.joinedAt) / 1000;
 
-        let maxTierDiff = 0;
-        if (pWaitSec >= 15) {
-            maxTierDiff = 2;
-        } else if (pWaitSec >= 7) {
-            maxTierDiff = 1;
-        }
+        // Rozdíl tierů je povolen až do +/- 2 (např. Tier 1 až Tier 3)
+        const maxTierDiff = 2; 
 
         let matchedGroup = [p1];
         let minTierInGroup = p1.tier;
@@ -242,14 +239,23 @@ function runMatchmakingLoop() {
                 minTierInGroup = newMin;
                 maxTierInGroup = newMax;
 
+                // Max 14 hráčů (7v7)
                 if (matchedGroup.length >= 14) break;
             }
         }
 
+        // Pokud je lichý počet hráčů, poslední přesuneme do dalšího cyklu
         if (matchedGroup.length % 2 !== 0) {
+            // Pokud hráči čekají déle než 35s a je jich jen 1v1, spustíme to.
+            // Jinak ořízneme na sudý počet (min. 4 pro 2v2 pokud nečekají moc dlouho).
+            if (matchedGroup.length < 4 && pWaitSec < 35 && waitingQueue.length > 2) {
+                // Počkáme na další hráče, aby nevznikala 1v1 bitva předčasně
+                continue;
+            }
             matchedGroup.pop();
         }
 
+        // Vytvoříme bitvu, pokud máme sudý počet alespoň 2 hráčů
         if (matchedGroup.length >= 2) {
             matchedGroup.forEach(player => {
                 const idx = waitingQueue.indexOf(player);
