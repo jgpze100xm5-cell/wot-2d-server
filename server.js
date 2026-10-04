@@ -85,11 +85,17 @@ function handleClientMessage(ws, data) {
         case 'PLAYER_MOVED':
             if (ws.isDead) return;
 
+            // Pokud klient v update poslal jméno, uložíme ho
+            const updatedName = data.playerName || data.player_name || data.name || data.nickname;
+            if (updatedName && updatedName !== 'Player') {
+                ws.playerName = updatedName;
+            }
+
             if (ws.matchId && matches.has(ws.matchId)) {
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
-                    playerName: ws.playerName, // <-- PRIDANÉ: posielame meno pri pohybe
+                    playerName: ws.playerName, // Vždy posíláme aktuální jméno
                     team: ws.team,
                     x: data.x,
                     y: data.y,
@@ -154,8 +160,14 @@ function addToQueue(ws, data) {
 
     if (waitingQueue.includes(ws)) return;
 
-    // PRIDANÉ: Uloženie mena z klienta
-    ws.playerName = data.playerName || data.player_name || data.name || "Player";
+    // Detekce jména ze všech možných klíčů, které GameMaker posílá
+    const extractedName = data.playerName || data.player_name || data.name || data.nickname;
+    if (extractedName && extractedName !== "") {
+        ws.playerName = String(extractedName);
+    } else if (!ws.playerName || ws.playerName === "") {
+        ws.playerName = "Player";
+    }
+
     ws.tankId = data.tankId || data.tank_id || "fcm36";
     ws.tier = Number(data.tier) || 1;
     ws.joinedAt = Date.now();
@@ -274,7 +286,7 @@ function createMatchFromPlayers(playersForMatch) {
 
         const playerData = {
             id: playerWs.id,
-            playerName: playerWs.playerName, // <-- PRIDANÉ: meno v MATCH_START
+            playerName: playerWs.playerName,
             tankId: playerWs.tankId,
             tier: playerWs.tier
         };
