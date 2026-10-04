@@ -28,13 +28,14 @@ setInterval(runMatchmakingLoop, 1000);
 
 wss.on('connection', (ws) => {
     ws.id = 'player_' + Math.random().toString(36).substr(2, 9);
+    ws.playerName = 'Player'; // Výchozí jméno
     ws.matchId = null;
     ws.team = null;
     ws.tankId = "fcm36";
     ws.tier = 1;
     ws.joinedAt = 0;
     ws.isAlive = true;
-    ws.isDead = false; // Příznak, zda je hráč v zápase mrtvý
+    ws.isDead = false;
 
     console.log(`[CONNECT] Pripojený hráč: ${ws.id}`);
 
@@ -82,13 +83,13 @@ function handleClientMessage(ws, data) {
 
         case 'PLAYER_UPDATE':
         case 'PLAYER_MOVED':
-            // Pokud je hráč mrtvý, jeho pozice nešíříme
             if (ws.isDead) return;
 
             if (ws.matchId && matches.has(ws.matchId)) {
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
+                    playerName: ws.playerName, // <-- PRIDANÉ: posielame meno pri pohybe
                     team: ws.team,
                     x: data.x,
                     y: data.y,
@@ -120,14 +121,12 @@ function handleClientMessage(ws, data) {
             if (ws.matchId && matches.has(ws.matchId)) {
                 const targetHp = data.remainingHp !== undefined ? data.remainingHp : data.newHp;
                 
-                // Pokud HP klesne na 0 nebo méně, označíme zasaženého hráče jako mrtvého
                 const match = matches.get(ws.matchId);
                 if (match) {
                     const targetWs = match.players.find(p => p.id === data.targetId);
                     if (targetWs && targetHp <= 0) {
                         targetWs.isDead = true;
                         
-                        // Informujeme zápas o definitivním zničení hráče
                         broadcastToMatch(ws.matchId, {
                             type: 'PLAYER_DIED',
                             playerId: data.targetId,
@@ -155,13 +154,15 @@ function addToQueue(ws, data) {
 
     if (waitingQueue.includes(ws)) return;
 
+    // PRIDANÉ: Uloženie mena z klienta
+    ws.playerName = data.playerName || data.player_name || data.name || "Player";
     ws.tankId = data.tankId || data.tank_id || "fcm36";
     ws.tier = Number(data.tier) || 1;
     ws.joinedAt = Date.now();
     ws.isDead = false;
 
     waitingQueue.push(ws);
-    console.log(`[MM] Hráč ${ws.id} vstúpil do fronty s tankom ${ws.tankId} (Tier ${ws.tier}). Celkovo vo fronte: ${waitingQueue.length}`);
+    console.log(`[MM] Hráč ${ws.playerName} (${ws.id}) vstúpil do fronty s tankom ${ws.tankId} (Tier ${ws.tier}).`);
 
     sendTo(ws, { type: 'QUEUE_JOINED', position: waitingQueue.length });
     broadcastQueueStatus();
@@ -209,7 +210,6 @@ function runMatchmakingLoop() {
     const oldestPlayer = waitingQueue[0];
     const waitTimeSec = (now - oldestPlayer.joinedAt) / 1000;
 
-    // Čekáme minimálně 10 sekund na naplnění lobby, pokud ještě nemáme plných 14 hráčů (7v7)
     if (waitingQueue.length < 14 && waitTimeSec < 10) {
         return; 
     }
@@ -219,8 +219,6 @@ function runMatchmakingLoop() {
         if (!p1) continue;
 
         const pWaitSec = (now - p1.joinedAt) / 1000;
-
-        // Rozdíl tierů je povolen až do +/- 2 (např. Tier 1 až Tier 3)
         const maxTierDiff = 2; 
 
         let matchedGroup = [p1];
@@ -239,23 +237,17 @@ function runMatchmakingLoop() {
                 minTierInGroup = newMin;
                 maxTierInGroup = newMax;
 
-                // Max 14 hráčů (7v7)
                 if (matchedGroup.length >= 14) break;
             }
         }
 
-        // Pokud je lichý počet hráčů, poslední přesuneme do dalšího cyklu
         if (matchedGroup.length % 2 !== 0) {
-            // Pokud hráči čekají déle než 35s a je jich jen 1v1, spustíme to.
-            // Jinak ořízneme na sudý počet (min. 4 pro 2v2 pokud nečekají moc dlouho).
             if (matchedGroup.length < 4 && pWaitSec < 35 && waitingQueue.length > 2) {
-                // Počkáme na další hráče, aby nevznikala 1v1 bitva předčasně
                 continue;
             }
             matchedGroup.pop();
         }
 
-        // Vytvoříme bitvu, pokud máme sudý počet alespoň 2 hráčů
         if (matchedGroup.length >= 2) {
             matchedGroup.forEach(player => {
                 const idx = waitingQueue.indexOf(player);
@@ -278,10 +270,11 @@ function createMatchFromPlayers(playersForMatch) {
 
     sortedPlayers.forEach((playerWs, index) => {
         playerWs.matchId = matchId;
-        playerWs.isDead = false; // Reset stavu při startu bitvy
+        playerWs.isDead = false;
 
         const playerData = {
             id: playerWs.id,
+            playerName: playerWs.playerName, // <-- PRIDANÉ: meno v MATCH_START
             tankId: playerWs.tankId,
             tier: playerWs.tier
         };
