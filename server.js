@@ -5,6 +5,7 @@ const PORT = process.env.PORT || 8080;
 const wss = new WebSocketServer({ port: PORT });
 
 console.log(`[SERVER] Tankový server beží na porte ${PORT}`);
+console.log(`[SERVER] Očakávané pripojenie z: wss://wot-2d-server.onrender.com`);
 
 // Globálny stav
 let waitingQueue = [];      // Hráči čakajúci na zápas
@@ -85,7 +86,7 @@ function handleClientMessage(ws, data) {
         case 'PLAYER_MOVED':
             if (ws.isDead) return;
 
-            // Pokud klient v update poslal jméno, uložíme ho
+            // Uloženie mena, ak ho klient pošle v update
             const updatedName = data.playerName || data.player_name || data.name || data.nickname;
             if (updatedName && updatedName !== 'Player') {
                 ws.playerName = updatedName;
@@ -95,7 +96,7 @@ function handleClientMessage(ws, data) {
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
-                    playerName: ws.playerName, // Vždy posíláme aktuální jméno
+                    playerName: ws.playerName,
                     team: ws.team,
                     x: data.x,
                     y: data.y,
@@ -160,7 +161,7 @@ function addToQueue(ws, data) {
 
     if (waitingQueue.includes(ws)) return;
 
-    // Detekce jména ze všech možných klíčů, které GameMaker posílá
+    // Detekcia mena zo všetkých možných kľúčov z GameMakeru
     const extractedName = data.playerName || data.player_name || data.name || data.nickname;
     if (extractedName && extractedName !== "") {
         ws.playerName = String(extractedName);
