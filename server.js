@@ -9,7 +9,7 @@ console.log(`[SERVER] Očakávané pripojenie z: wss://wot-2d-server.onrender.co
 
 // Globálny stav
 let waitingQueue = [];      // Hráči čakajúci na zápas
-let matchCounter = 1;        // ID zápasov
+let matchCounter = 1;       // ID zápasov
 const matches = new Map();   // Aktívne zápasy { matchId: matchData }
 
 // --- HEARTBEAT / PING-PONG (Ochrana proti Render timeoutu) ---
@@ -26,6 +26,9 @@ const pingInterval = setInterval(() => {
 
 // Pravidelná kontrola matchmakingu každú 1 sekundu
 setInterval(runMatchmakingLoop, 1000);
+
+// Pravidelná kontrola a aktualizácia stavu základen (Cap loop každých 100ms)
+setInterval(runBasesLoop, 100);
 
 wss.on('connection', (ws) => {
     ws.id = 'player_' + Math.random().toString(36).substr(2, 9);
@@ -86,7 +89,6 @@ function handleClientMessage(ws, data) {
         case 'PLAYER_MOVED':
             if (ws.isDead) return;
 
-            // Uloženie mena, ak ho klient pošle v update
             const updatedName = data.playerName || data.player_name || data.name || data.nickname;
             if (updatedName && updatedName !== 'Player') {
                 ws.playerName = updatedName;
@@ -136,6 +138,11 @@ function handleClientMessage(ws, data) {
                     if (targetWs && targetHp <= 0) {
                         targetWs.isDead = true;
                         
+                        // Odstránenie mŕtveho hráča zo všetkých zoznamov základen, ak v nich stál
+                        match.bases.forEach(base => {
+                            base.cappingPlayers.delete(targetWs.id);
+                        });
+
                         broadcastToMatch(ws.matchId, {
                             type: 'PLAYER_DIED',
                             playerId: data.targetId,
@@ -144,6 +151,16 @@ function handleClientMessage(ws, data) {
                     }
 
                     // --- DECAP: Zásah hráče způsobuje reset jeho obsazování ---
+                    match.bases.forEach(base => {
+                        if (base.cappingPlayers.has(data.targetId)) {
+                            base.cappingPlayers.delete(data.targetId);
+                            if (base.cappingPlayers.size === 0) {
+                                base.progress = 0;
+                                base.cappingTeam = null;
+                            }
+                        }
+                    });
+
                     broadcastToMatch(ws.matchId, {
                         type: 'CAP_DECAP',
                         targetId: data.targetId
@@ -160,31 +177,93 @@ function handleClientMessage(ws, data) {
             }
             break;
 
-        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) ---
+        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) - Server-managed ---
         case 'CAP_PROGRESS':
             if (ws.matchId && matches.has(ws.matchId)) {
-                // Přeposlání aktualizace obsazování všem zbývajícím hráčům v zápase
-                broadcastToMatch(ws.matchId, {
-                    type: 'CAP_UPDATE',
-                    baseOwner: data.baseOwner, // "red" nebo "blue"
-                    cappingTeam: ws.team,      // Tým, který bázi zabírá
-                    progress: data.progress,   // Procenta (0-100)
-                    playerId: ws.id
-                }, ws.id);
+                const match = matches.get(ws.matchId);
+                if (match && match.bases.has(data.baseOwner)) {
+                    const base = match.bases.get(data.baseOwner);
+                    const isInside = data.progress > 0; // Ak je v kruhu
+
+                    // Kontrola pravidla: Vlastnú základňu si obsadiť nemôže
+                    if (ws.team !== data.baseOwner && isInside) {
+                        base.cappingPlayers.set(ws.id, ws.team);
+                    } else {
+                        base.cappingPlayers.delete(ws.id);
+                    }
+                }
             }
             break;
 
         case 'BASE_CAPTURED':
-            if (ws.matchId && matches.has(ws.matchId)) {
-                console.log(`[MATCH] Základna v zápase ${ws.matchId} byla obsazena týmem ${ws.team}!`);
-                broadcastToMatch(ws.matchId, {
-                    type: 'BASE_CAPTURED',
-                    winnerTeam: ws.team,
-                    baseOwner: data.baseOwner
-                });
-            }
+            // Necháme serverLoop, aby spravoval výhru, ale ak to pošle klient, môžeme zalogovať
             break;
     }
+}
+
+// --- SERVER LOOP PRE SPRÁVU ZÁKLADEN ---
+function runBasesLoop() {
+    matches.forEach((match, matchId) => {
+        match.bases.forEach((base, baseOwner) => {
+            // Zistíme, ktoré tímy aktuálne stoja v základni
+            const teamsInBase = new Set();
+            base.cappingPlayers.forEach((team) => {
+                teamsInBase.add(team);
+            });
+
+            // Ak v základni stoja hráči nepriateľského tímu
+            if (teamsInBase.size > 0) {
+                // Pre jednoduchosť vezmeme prvý aktívny capujúci tím v zozname
+                const cappingTeam = Array.from(teamsInBase)[0];
+
+                // Ak sa zmenil tím capujúcich, prípadne pokračujeme
+                if (base.cappingTeam !== cappingTeam) {
+                    base.cappingTeam = cappingTeam;
+                }
+
+                // Navýšenie progressu (60 sekund do 100% pri tick rate 100ms = 10 tikov za sekundu -> 0.166% za tik)
+                base.progress = Math.min(100, base.progress + 0.167);
+
+                // Broadcast aktualizácie všem v zápase
+                broadcastToMatch(matchId, {
+                    type: 'CAP_UPDATE',
+                    baseOwner: baseOwner,
+                    cappingTeam: base.cappingTeam,
+                    progress: base.progress
+                });
+
+                // Kontrola víťazstva
+                if (base.progress >= 100) {
+                    console.log(`[MATCH] Základna ${baseOwner} v zápase ${matchId} byla obsazena týmem ${base.cappingTeam}!`);
+                    broadcastToMatch(matchId, {
+                        type: 'BASE_CAPTURED',
+                        winnerTeam: base.cappingTeam,
+                        baseOwner: baseOwner
+                    });
+                    // Reset progressu po zabratí
+                    base.progress = 0;
+                    base.cappingTeam = null;
+                    base.cappingPlayers.clear();
+                }
+            } else {
+                // Nikto v základni nestojí - pomalý pokles progressu
+                if (base.progress > 0) {
+                    base.progress = Math.max(0, base.progress - 0.25);
+
+                    broadcastToMatch(matchId, {
+                        type: 'CAP_UPDATE',
+                        baseOwner: baseOwner,
+                        cappingTeam: base.cappingTeam,
+                        progress: base.progress
+                    });
+
+                    if (base.progress === 0) {
+                        base.cappingTeam = null;
+                    }
+                }
+            }
+        });
+    });
 }
 
 function addToQueue(ws, data) {
@@ -194,7 +273,6 @@ function addToQueue(ws, data) {
 
     if (waitingQueue.includes(ws)) return;
 
-    // Detekcia mena zo všetkých možných kľúčov z GameMakeru
     const extractedName = data.playerName || data.player_name || data.name || data.nickname;
     if (extractedName && extractedName !== "") {
         ws.playerName = String(extractedName);
@@ -230,6 +308,11 @@ function leaveCurrentMatch(ws) {
         const match = matches.get(matchId);
 
         match.players = match.players.filter(p => p !== ws);
+
+        // Odstránenie hráča z mapy capujúcich hráčov v základniach
+        match.bases.forEach(base => {
+            base.cappingPlayers.delete(ws.id);
+        });
 
         console.log(`[MATCH] Hráč ${ws.id} opustil zápas ${matchId}. Ostáva hráčov: ${match.players.length}`);
 
@@ -275,7 +358,6 @@ function runMatchmakingLoop() {
             const p2 = waitingQueue[j];
             if (!p2) continue;
 
-            // --- PRAVIDLO PRE TIERY 9 A 10 ---
             const p1IsEndgame = (p1.tier >= 9);
             const p2IsEndgame = (p2.tier >= 9);
             if (p1IsEndgame !== p2IsEndgame) {
@@ -351,9 +433,23 @@ function createMatchFromPlayers(playersForMatch) {
         }
     });
 
+    // Inicializácia základen pre nový zápas
+    const matchBases = new Map();
+    matchBases.set("red", {
+        progress: 0,
+        cappingTeam: null,
+        cappingPlayers: new Map() // playerId -> team
+    });
+    matchBases.set("blue", {
+        progress: 0,
+        cappingTeam: null,
+        cappingPlayers: new Map() // playerId -> team
+    });
+
     matches.set(matchId, {
         id: matchId,
         players: playersForMatch,
+        bases: matchBases,
         createdAt: Date.now()
     });
 
