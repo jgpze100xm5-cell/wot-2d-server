@@ -116,6 +116,8 @@ function handleClientMessage(ws, data) {
                 broadcastToMatch(ws.matchId, {
                     type: 'PLAYER_SHOOT',
                     playerId: ws.id,
+                    tankId: data.tankId || ws.tankId, // Posielame aj tankId kvôli identifikácii strely
+                    bulletType: data.bulletType || data.bullet_obj || data.bulletObj || null, // Podpora pre rôzne názvy kľúčov munície
                     x: data.x,
                     y: data.y,
                     angle: data.angle,
@@ -242,10 +244,25 @@ function runMatchmakingLoop() {
             const p2 = waitingQueue[j];
             if (!p2) continue;
 
+            // --- PRAVIDLO PRE TIERY 9 A 10 ---
+            // Ak je hráč v skupine v tierte 9 alebo 10, p2 musí byť tiež 9 alebo 10.
+            const p1IsEndgame = (p1.tier >= 9);
+            const p2IsEndgame = (p2.tier >= 9);
+            if (p1IsEndgame !== p2IsEndgame) {
+                continue; // Preskočíme hráča, ak patrí do inej kategórie (endgame vs bežné tiery)
+            }
+
             const newMin = Math.min(minTierInGroup, p2.tier);
             const newMax = Math.max(maxTierInGroup, p2.tier);
 
-            if ((newMax - newMin) <= maxTierDiff) {
+            // Pre tiery 9 a 10 sa môžu stretnúť len medzi sebou (rozdiel tierov max 1, alebo podľa potreby, tu stačí splniť podmienku oboch >= 9)
+            if (p1IsEndgame && p2IsEndgame) {
+                matchedGroup.push(p2);
+                minTierInGroup = newMin;
+                maxTierInGroup = newMax;
+                if (matchedGroup.length >= 14) break;
+            } 
+            else if ((newMax - newMin) <= maxTierDiff) {
                 matchedGroup.push(p2);
                 minTierInGroup = newMin;
                 maxTierInGroup = newMax;
@@ -350,6 +367,7 @@ function broadcastToMatch(matchId, messageObject, excludePlayerId = null) {
     if (!match) return;
 
     const payload = JSON.stringify(messageObject);
+    match.players.players?.forEach?.(...) // safe check
     match.players.forEach((playerWs) => {
         if (playerWs.readyState === WebSocket.OPEN && playerWs.id !== excludePlayerId) {
             playerWs.send(payload);
