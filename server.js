@@ -149,10 +149,21 @@ function handleClientMessage(ws, data) {
                         });
                     }
 
-                    // --- DECAP: Zásah hráče způsobuje reset jeho obsazování ---
-                    match.bases.forEach(base => {
+                    // --- DECAP: Zásah hráče způsobuje reset capu POUZE pokud v něm reálně stál ---
+                    match.bases.forEach((base, baseOwner) => {
                         if (base.cappingPlayers.has(data.targetId)) {
                             base.cappingPlayers.delete(data.targetId);
+                            base.progress = 0;
+                            base.cappingTeam = null;
+
+                            broadcastToMatch(ws.matchId, {
+                                type: 'CAP_UPDATE',
+                                baseOwner: baseOwner,
+                                cappingTeam: null,
+                                progress: 0
+                            });
+
+                            console.log(`[DECAP] Hráč ${data.targetId} dostal zásah v base ${baseOwner} - cap zresetován!`);
                         }
                     });
 
@@ -178,7 +189,6 @@ function handleClientMessage(ws, data) {
                 const match = matches.get(ws.matchId);
                 if (match && match.bases.has(data.baseOwner)) {
                     const base = match.bases.get(data.baseOwner);
-                    // Zkontrolujeme, zda posílá platný progress (větší než 0)
                     const isInside = data.progress !== undefined && data.progress > 0;
 
                     if (ws.team !== data.baseOwner && isInside) {
@@ -187,7 +197,6 @@ function handleClientMessage(ws, data) {
                             lastUpdate: Date.now()
                         });
                     } else {
-                        // Pokud poslal 0 nebo jiný neplatný stav, okamžitě ho mažeme ze seznamu
                         base.cappingPlayers.delete(ws.id);
                     }
                 }
