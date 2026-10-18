@@ -172,21 +172,22 @@ function handleClientMessage(ws, data) {
             }
             break;
 
-        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) - Server-managed s časovačem ---
+        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) - Server-managed s okamžitým mazáním ---
         case 'CAP_PROGRESS':
             if (ws.matchId && matches.has(ws.matchId)) {
                 const match = matches.get(ws.matchId);
                 if (match && match.bases.has(data.baseOwner)) {
                     const base = match.bases.get(data.baseOwner);
-                    const isInside = data.progress > 0;
+                    // Zkontrolujeme, zda posílá platný progress (větší než 0)
+                    const isInside = data.progress !== undefined && data.progress > 0;
 
                     if (ws.team !== data.baseOwner && isInside) {
-                        // Uložení hráče s aktuálním timestampem posledního paketu
                         base.cappingPlayers.set(ws.id, {
                             team: ws.team,
                             lastUpdate: Date.now()
                         });
                     } else {
+                        // Pokud poslal 0 nebo jiný neplatný stav, okamžitě ho mažeme ze seznamu
                         base.cappingPlayers.delete(ws.id);
                     }
                 }
@@ -205,7 +206,7 @@ function runBasesLoop() {
     matches.forEach((match, matchId) => {
         match.bases.forEach((base, baseOwner) => {
             
-            // 1. TIMEOUT KONTROLA: Vymažeme hráčov, ktorí neposlali update dlhšie ako 1 sekundu (vyšli z kruhu)
+            // 1. TIMEOUT KONTROLA: Vymažeme hráčov, ktorí neposlali update dlhšie ako 1 sekundu
             base.cappingPlayers.forEach((playerInfo, playerId) => {
                 if (now - playerInfo.lastUpdate > 1000) {
                     base.cappingPlayers.delete(playerId);
