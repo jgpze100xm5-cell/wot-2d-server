@@ -142,6 +142,12 @@ function handleClientMessage(ws, data) {
                             killerId: ws.id
                         });
                     }
+
+                    // --- DECAP: Zásah hráče způsobuje reset jeho obsazování ---
+                    broadcastToMatch(ws.matchId, {
+                        type: 'CAP_DECAP',
+                        targetId: data.targetId
+                    });
                 }
 
                 broadcastToMatch(ws.matchId, {
@@ -150,6 +156,31 @@ function handleClientMessage(ws, data) {
                     attackerId: ws.id,
                     damage: data.damage,
                     newHp: targetHp
+                });
+            }
+            break;
+
+        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) ---
+        case 'CAP_PROGRESS':
+            if (ws.matchId && matches.has(ws.matchId)) {
+                // Přeposlání aktualizace obsazování všem zbývajícím hráčům v zápase
+                broadcastToMatch(ws.matchId, {
+                    type: 'CAP_UPDATE',
+                    baseOwner: data.baseOwner, // "red" nebo "blue"
+                    cappingTeam: ws.team,      // Tým, který bázi zabírá
+                    progress: data.progress,   // Procenta (0-100)
+                    playerId: ws.id
+                }, ws.id);
+            }
+            break;
+
+        case 'BASE_CAPTURED':
+            if (ws.matchId && matches.has(ws.matchId)) {
+                console.log(`[MATCH] Základna v zápase ${ws.matchId} byla obsazena týmem ${ws.team}!`);
+                broadcastToMatch(ws.matchId, {
+                    type: 'BASE_CAPTURED',
+                    winnerTeam: ws.team,
+                    baseOwner: data.baseOwner
                 });
             }
             break;
