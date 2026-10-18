@@ -138,7 +138,6 @@ function handleClientMessage(ws, data) {
                     if (targetWs && targetHp <= 0) {
                         targetWs.isDead = true;
                         
-                        // Odstránenie mŕtveho hráča zo všetkých zoznamov základen, ak v nich stál
                         match.bases.forEach(base => {
                             base.cappingPlayers.delete(targetWs.id);
                         });
@@ -154,10 +153,6 @@ function handleClientMessage(ws, data) {
                     match.bases.forEach(base => {
                         if (base.cappingPlayers.has(data.targetId)) {
                             base.cappingPlayers.delete(data.targetId);
-                            if (base.cappingPlayers.size === 0) {
-                                base.progress = 0;
-                                base.cappingTeam = null;
-                            }
                         }
                     });
 
@@ -177,17 +172,20 @@ function handleClientMessage(ws, data) {
             }
             break;
 
-        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) - Server-managed ---
+        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) - Server-managed s časovačem ---
         case 'CAP_PROGRESS':
             if (ws.matchId && matches.has(ws.matchId)) {
                 const match = matches.get(ws.matchId);
                 if (match && match.bases.has(data.baseOwner)) {
                     const base = match.bases.get(data.baseOwner);
-                    const isInside = data.progress > 0; // Ak je v kruhu
+                    const isInside = data.progress > 0;
 
-                    // Kontrola pravidla: Vlastnú základňu si obsadiť nemôže
                     if (ws.team !== data.baseOwner && isInside) {
-                        base.cappingPlayers.set(ws.id, ws.team);
+                        // Uložení hráče s aktuálním timestampem posledního paketu
+                        base.cappingPlayers.set(ws.id, {
+                            team: ws.team,
+                            lastUpdate: Date.now()
+                        });
                     } else {
                         base.cappingPlayers.delete(ws.id);
                     }
@@ -196,35 +194,41 @@ function handleClientMessage(ws, data) {
             break;
 
         case 'BASE_CAPTURED':
-            // Necháme serverLoop, aby spravoval výhru, ale ak to pošle klient, môžeme zalogovať
             break;
     }
 }
 
 // --- SERVER LOOP PRE SPRÁVU ZÁKLADEN ---
 function runBasesLoop() {
+    const now = Date.now();
+
     matches.forEach((match, matchId) => {
         match.bases.forEach((base, baseOwner) => {
-            // Zistíme, ktoré tímy aktuálne stoja v základni
+            
+            // 1. TIMEOUT KONTROLA: Vymažeme hráčov, ktorí neposlali update dlhšie ako 1 sekundu (vyšli z kruhu)
+            base.cappingPlayers.forEach((playerInfo, playerId) => {
+                if (now - playerInfo.lastUpdate > 1000) {
+                    base.cappingPlayers.delete(playerId);
+                }
+            });
+
+            // 2. Zistíme, ktoré tímy aktuálne stoja v základni
             const teamsInBase = new Set();
-            base.cappingPlayers.forEach((team) => {
-                teamsInBase.add(team);
+            base.cappingPlayers.forEach((playerInfo) => {
+                teamsInBase.add(playerInfo.team);
             });
 
             // Ak v základni stoja hráči nepriateľského tímu
             if (teamsInBase.size > 0) {
-                // Pre jednoduchosť vezmeme prvý aktívny capujúci tím v zozname
                 const cappingTeam = Array.from(teamsInBase)[0];
 
-                // Ak sa zmenil tím capujúcich, prípadne pokračujeme
                 if (base.cappingTeam !== cappingTeam) {
                     base.cappingTeam = cappingTeam;
                 }
 
-                // Navýšenie progressu (60 sekund do 100% pri tick rate 100ms = 10 tikov za sekundu -> 0.166% za tik)
+                // Navýšenie progressu (60 sekund do 100% pri tick rate 100ms = 0.167% za tik)
                 base.progress = Math.min(100, base.progress + 0.167);
 
-                // Broadcast aktualizácie všem v zápase
                 broadcastToMatch(matchId, {
                     type: 'CAP_UPDATE',
                     baseOwner: baseOwner,
@@ -240,7 +244,6 @@ function runBasesLoop() {
                         winnerTeam: base.cappingTeam,
                         baseOwner: baseOwner
                     });
-                    // Reset progressu po zabratí
                     base.progress = 0;
                     base.cappingTeam = null;
                     base.cappingPlayers.clear();
@@ -309,7 +312,6 @@ function leaveCurrentMatch(ws) {
 
         match.players = match.players.filter(p => p !== ws);
 
-        // Odstránenie hráča z mapy capujúcich hráčov v základniach
         match.bases.forEach(base => {
             base.cappingPlayers.delete(ws.id);
         });
@@ -433,17 +435,16 @@ function createMatchFromPlayers(playersForMatch) {
         }
     });
 
-    // Inicializácia základen pre nový zápas
     const matchBases = new Map();
     matchBases.set("red", {
         progress: 0,
         cappingTeam: null,
-        cappingPlayers: new Map() // playerId -> team
+        cappingPlayers: new Map()
     });
     matchBases.set("blue", {
         progress: 0,
         cappingTeam: null,
-        cappingPlayers: new Map() // playerId -> team
+        cappingPlayers: new Map()
     });
 
     matches.set(matchId, {
