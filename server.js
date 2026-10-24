@@ -1,4 +1,5 @@
 const { WebSocketServer, WebSocket } = require('ws');
+const fs = require('fs'); // <--- Přidán modul pro práci se soubory
 
 // Render odovzdáva port automaticky cez premenné prostredia process.env.PORT
 const PORT = process.env.PORT || 8080;
@@ -9,7 +10,7 @@ console.log(`[SERVER] Očakávané pripojenie z: wss://wot-2d-server.onrender.co
 
 // Globálny stav
 let waitingQueue = [];      // Hráči čakajúci na zápas
-let matchCounter = 1;       // ID zápasov
+let matchCounter = 1;        // ID zápasov
 const matches = new Map();   // Aktívne zápasy { matchId: matchData }
 
 // --- HEARTBEAT / PING-PONG (Ochrana proti Render timeoutu) ---
@@ -83,6 +84,58 @@ function handleClientMessage(ws, data) {
 
         case 'LEAVE_MATCH':
             leaveCurrentMatch(ws);
+            break;
+
+        // --- OVĚŘENÍ JEDNORÁZOVÉHO KÓDU PRO PRÉMIOVÝ TANK ---
+        case 'REDEEM_CODE':
+            const targetTankId = data.tankId;
+            const enteredCode = data.code;
+
+            try {
+                // Načteme soubor codes.json
+                if (!fs.existsSync('codes.json')) {
+                    sendTo(ws, {
+                        type: 'CODE_INVALID',
+                        message: 'Chybí soubor s kódy na serveru.'
+                    });
+                    return;
+                }
+
+                let rawData = fs.readFileSync('codes.json', 'utf8');
+                let codesData = JSON.parse(rawData);
+
+                // Zkontrolujeme, jestli tank existuje a kód je v jeho seznamu
+                if (codesData[targetTankId] && codesData[targetTankId].includes(enteredCode)) {
+                    
+                    // 1. Kód odstraníme z pole (už nikdy nepůjde použít podruhé)
+                    codesData[targetTankId] = codesData[targetTankId].filter(c => c !== enteredCode);
+                    
+                    // 2. Uložíme aktualizovaný soubor zpět na disk
+                    fs.writeFileSync('codes.json', JSON.stringify(codesData, null, 2), 'utf8');
+
+                    // 3. Pošleme klientovi úspěšnou odpověď
+                    sendTo(ws, {
+                        type: 'CODE_SUCCESS',
+                        tankId: targetTankId
+                    });
+
+                    console.log(`[CODE] Hráč ${ws.id} úspěšně uplatnil kód pro tank: ${targetTankId}`);
+                } else {
+                    // Kód neexistuje nebo už byl vyčerpán
+                    sendTo(ws, {
+                        type: 'CODE_INVALID',
+                        message: 'Tento kód je neplatný nebo již byl použit.'
+                    });
+
+                    console.log(`[CODE] Hráč ${ws.id} zadal neplatný/použitý kód: ${enteredCode}`);
+                }
+            } catch (err) {
+                console.error("[CODE ERROR] Chyba při čtení/zápisu codes.json:", err);
+                sendTo(ws, {
+                    type: 'CODE_INVALID',
+                    message: 'Chyba serveru při ověřování kódu.'
+                });
+            }
             break;
 
         case 'PLAYER_UPDATE':
