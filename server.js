@@ -9,9 +9,11 @@ console.log(`[SERVER] Tankový server beží na porte ${PORT}`);
 console.log(`[SERVER] Očakávané pripojenie z: wss://wot-2d-server.onrender.com`);
 
 // Globálny stav
-let waitingQueue = [];      // Hráči čakajúci na zápas
+let waitingQueue = [];       // Hráči čakajúci na zápas
 let matchCounter = 1;        // ID zápasov
 const matches = new Map();   // Aktívne zápasy { matchId: matchData }
+const parties = new Map();   // Aktívne čety { partyId: partyData }
+let partyCounter = 1;
 
 // --- HEARTBEAT / PING-PONG (Ochrana proti Render timeoutu) ---
 const pingInterval = setInterval(() => {
@@ -41,6 +43,7 @@ wss.on('connection', (ws) => {
     ws.joinedAt = 0;
     ws.isAlive = true;
     ws.isDead = false;
+    ws.partyId = null; // ID čety, v ktorej sa hráč nachádza
 
     console.log(`[CONNECT] Pripojený hráč: ${ws.id}`);
 
@@ -86,13 +89,54 @@ function handleClientMessage(ws, data) {
             leaveCurrentMatch(ws);
             break;
 
+        // --- SYSTÉM ČET (PLATOONS) ---
+        case 'CREATE_PARTY':
+            if (ws.partyId) leaveParty(ws);
+            
+            const newPartyId = 'party_' + partyCounter++;
+            const newParty = {
+                id: newPartyId,
+                leaderId: ws.id,
+                members: [ws]
+            };
+            parties.set(newPartyId, newParty);
+            ws.partyId = newPartyId;
+
+            console.log(`[PARTY] Hráč ${ws.id} vytvoril četu ${newPartyId}`);
+            sendPartyUpdate(newParty);
+            break;
+
+        case 'JOIN_PARTY':
+            const targetPartyId = data.partyId;
+            const party = parties.get(targetPartyId);
+
+            if (!party) {
+                sendTo(ws, { type: 'PARTY_ERROR', message: 'Četa neexistuje.' });
+                return;
+            }
+            if (party.members.length >= 3) {
+                sendTo(ws, { type: 'PARTY_ERROR', message: 'Četa je plná (max 3 hráči).' });
+                return;
+            }
+            if (ws.partyId) leaveParty(ws);
+
+            party.members.push(ws);
+            ws.partyId = targetPartyId;
+
+            console.log(`[PARTY] Hráč ${ws.id} vstúpil do čety ${targetPartyId}`);
+            sendPartyUpdate(party);
+            break;
+
+        case 'LEAVE_PARTY':
+            leaveParty(ws);
+            break;
+
         // --- OVĚŘENÍ JEDNORÁZOVÉHO KÓDU PRO PRÉMIOVÝ TANK ---
         case 'REDEEM_CODE':
             const targetTankId = data.tankId;
             const enteredCode = data.code;
 
             try {
-                // Načteme soubor codes.json
                 if (!fs.existsSync('codes.json')) {
                     sendTo(ws, {
                         type: 'CODE_INVALID',
@@ -104,16 +148,10 @@ function handleClientMessage(ws, data) {
                 let rawData = fs.readFileSync('codes.json', 'utf8');
                 let codesData = JSON.parse(rawData);
 
-                // Zkontrolujeme, jestli tank existuje a kód je v jeho seznamu
                 if (codesData[targetTankId] && codesData[targetTankId].includes(enteredCode)) {
-                    
-                    // 1. Kód odstraníme z pole (už nikdy nepůjde použít podruhé)
                     codesData[targetTankId] = codesData[targetTankId].filter(c => c !== enteredCode);
-                    
-                    // 2. Uložíme aktualizovaný soubor zpět na disk
                     fs.writeFileSync('codes.json', JSON.stringify(codesData, null, 2), 'utf8');
 
-                    // 3. Pošleme klientovi úspěšnou odpověď
                     sendTo(ws, {
                         type: 'CODE_SUCCESS',
                         tankId: targetTankId
@@ -121,7 +159,6 @@ function handleClientMessage(ws, data) {
 
                     console.log(`[CODE] Hráč ${ws.id} úspěšně uplatnil kód pro tank: ${targetTankId}`);
                 } else {
-                    // Kód neexistuje nebo už byl vyčerpán
                     sendTo(ws, {
                         type: 'CODE_INVALID',
                         message: 'Tento kód je neplatný nebo již byl použit.'
@@ -202,7 +239,6 @@ function handleClientMessage(ws, data) {
                         });
                     }
 
-                    // --- DECAP: Zásah hráče způsobuje reset capu POUZE pokud v něm reálně stál ---
                     match.bases.forEach((base, baseOwner) => {
                         if (base.cappingPlayers.has(data.targetId)) {
                             base.cappingPlayers.delete(data.targetId);
@@ -236,7 +272,6 @@ function handleClientMessage(ws, data) {
             }
             break;
 
-        // --- OBSAZOVÁNÍ ZÁKLADEN (CAP) - Server-managed s okamžitým mazáním ---
         case 'CAP_PROGRESS':
             if (ws.matchId && matches.has(ws.matchId)) {
                 const match = matches.get(ws.matchId);
@@ -261,6 +296,47 @@ function handleClientMessage(ws, data) {
     }
 }
 
+// Pomocná funkcia pre opustenie čety
+function leaveParty(ws) {
+    if (!ws.partyId) return;
+    const party = parties.get(ws.partyId);
+    if (party) {
+        party.members = party.members.filter(m => m !== ws);
+        console.log(`[PARTY] Hráč ${ws.id} opustil četu ${ws.partyId}`);
+
+        if (party.members.length === 0) {
+            parties.delete(ws.partyId);
+            console.log(`[PARTY CLOSED] Četa ${ws.partyId} bola zrušená (prázdna).`);
+        } else {
+            // Ak odišiel lídr, pridelíme vedenie ďalšiemu členovi
+            if (party.leaderId === ws.id) {
+                party.leaderId = party.members[0].id;
+            }
+            sendPartyUpdate(party);
+        }
+    }
+    ws.partyId = null;
+    sendTo(ws, { type: 'PARTY_LEFT' });
+}
+
+function sendPartyUpdate(party) {
+    const memberData = party.members.map(m => ({
+        id: m.id,
+        playerName: m.playerName,
+        tankId: m.tankId,
+        tier: m.tier
+    }));
+
+    party.members.forEach(m => {
+        sendTo(m, {
+            type: 'PARTY_UPDATE',
+            partyId: party.id,
+            leaderId: party.leaderId,
+            members: memberData
+        });
+    });
+}
+
 // --- SERVER LOOP PRE SPRÁVU ZÁKLADEN ---
 function runBasesLoop() {
     const now = Date.now();
@@ -268,20 +344,17 @@ function runBasesLoop() {
     matches.forEach((match, matchId) => {
         match.bases.forEach((base, baseOwner) => {
             
-            // 1. TIMEOUT KONTROLA: Vymažeme hráčov, ktorí neposlali update dlhšie ako 1 sekundu
             base.cappingPlayers.forEach((playerInfo, playerId) => {
                 if (now - playerInfo.lastUpdate > 1000) {
                     base.cappingPlayers.delete(playerId);
                 }
             });
 
-            // 2. Zistíme, ktoré tímy aktuálne stoja v základni
             const teamsInBase = new Set();
             base.cappingPlayers.forEach((playerInfo) => {
                 teamsInBase.add(playerInfo.team);
             });
 
-            // Ak v základni stoja hráči nepriateľského tímu
             if (teamsInBase.size > 0) {
                 const cappingTeam = Array.from(teamsInBase)[0];
 
@@ -289,7 +362,6 @@ function runBasesLoop() {
                     base.cappingTeam = cappingTeam;
                 }
 
-                // Navýšenie progressu (60 sekund do 100% pri tick rate 100ms = 0.167% za tik)
                 base.progress = Math.min(100, base.progress + 0.167);
 
                 broadcastToMatch(matchId, {
@@ -299,7 +371,6 @@ function runBasesLoop() {
                     progress: base.progress
                 });
 
-                // Kontrola víťazstva
                 if (base.progress >= 100) {
                     console.log(`[MATCH] Základna ${baseOwner} v zápase ${matchId} byla obsazena týmem ${base.cappingTeam}!`);
                     broadcastToMatch(matchId, {
@@ -312,7 +383,6 @@ function runBasesLoop() {
                     base.cappingPlayers.clear();
                 }
             } else {
-                // Nikto v základni nestojí - pomalý pokles progressu
                 if (base.progress > 0) {
                     base.progress = Math.max(0, base.progress - 0.25);
 
@@ -402,6 +472,7 @@ function runMatchmakingLoop() {
 
     const now = Date.now();
     const oldestPlayer = waitingQueue[0];
+    if (!oldestPlayer) return;
     const waitTimeSec = (now - oldestPlayer.joinedAt) / 1000;
 
     if (waitingQueue.length < 14 && waitTimeSec < 10) {
@@ -412,69 +483,89 @@ function runMatchmakingLoop() {
         const p1 = waitingQueue[i];
         if (!p1) continue;
 
-        const pWaitSec = (now - p1.joinedAt) / 1000;
-        const maxTierDiff = 2; 
+        // Ak je p1 v čete, zoberieme celú četu naraz ako základ pre match
+        let groupToMatch = [];
+        if (p1.partyId) {
+            const party = parties.get(p1.partyId);
+            if (party && party.leaderId === p1.id) {
+                // Ak je to líder, vezmeme všetkých členov čety, ktorí sú vo frontě
+                groupToMatch = party.members.filter(m => waitingQueue.includes(m));
+            } else {
+                continue; // Nie je líder, preskočíme (bude vybavený cez lídra)
+            }
+        } else {
+            groupToMatch = [p1];
+        }
 
-        let matchedGroup = [p1];
-        let minTierInGroup = p1.tier;
-        let maxTierInGroup = p1.tier;
+        let minTierInGroup = Math.min(...groupToMatch.map(m => m.tier));
+        let maxTierInGroup = Math.max(...groupToMatch.map(m => m.tier));
 
-        for (let j = i + 1; j < waitingQueue.length; j++) {
+        // Hľadáme ďalších hráčov/čety do zápasu
+        for (let j = 0; j < waitingQueue.length; j++) {
             const p2 = waitingQueue[j];
-            if (!p2) continue;
+            if (!p2 || groupToMatch.includes(p2)) continue;
 
-            const p1IsEndgame = (p1.tier >= 9);
-            const p2IsEndgame = (p2.tier >= 9);
-            if (p1IsEndgame !== p2IsEndgame) {
-                continue; 
+            // Ak je p2 v čete, musíme zobrať celú četu naraz
+            let p2Group = [p2];
+            if (p2.partyId) {
+                const p2Party = parties.get(p2.partyId);
+                if (p2Party) {
+                    p2Group = p2Party.members.filter(m => waitingQueue.includes(m));
+                    // Preskočíme duplicitné prechody členov rovnakej čety
+                    if (p2Party.leaderId !== p2.id) continue;
+                }
             }
 
-            const newMin = Math.min(minTierInGroup, p2.tier);
-            const newMax = Math.max(maxTierInGroup, p2.tier);
+            const p1IsEndgame = (minTierInGroup >= 9);
+            const p2MinTier = Math.min(...p2Group.map(m => m.tier));
+            const p2MaxTier = Math.max(...p2Group.map(m => m.tier));
+            const p2IsEndgame = (p2MinTier >= 9);
 
-            if (p1IsEndgame && p2IsEndgame) {
-                matchedGroup.push(p2);
-                minTierInGroup = newMin;
-                maxTierInGroup = newMax;
-                if (matchedGroup.length >= 14) break;
-            } 
-            else if ((newMax - newMin) <= maxTierDiff) {
-                matchedGroup.push(p2);
-                minTierInGroup = newMin;
-                maxTierInGroup = newMax;
+            if (p1IsEndgame !== p2IsEndgame) continue;
 
-                if (matchedGroup.length >= 14) break;
-            }
+            const newMin = Math.min(minTierInGroup, p2MinTier);
+            const newMax = Math.max(maxTierInGroup, p2MaxTier);
+
+            if (!p1IsEndgame && (newMax - newMin) > 2) continue;
+
+            // Pridáme skupinu do matchu
+            groupToMatch.push(...p2Group);
+            minTierInGroup = newMin;
+            maxTierInGroup = newMax;
+
+            if (groupToMatch.length >= 14) break;
         }
 
-        if (matchedGroup.length % 2 !== 0) {
-            if (matchedGroup.length < 4 && pWaitSec < 35 && waitingQueue.length > 2) {
-                continue;
-            }
-            matchedGroup.pop();
+        if (groupToMatch.length % 2 !== 0 && groupToMatch.length >= 2) {
+            groupToMatch.pop(); // Udržujeme párny počet hráčov
         }
 
-        if (matchedGroup.length >= 2) {
-            matchedGroup.forEach(player => {
+        if (groupToMatch.length >= 2) {
+            // Odstránime všetkých vybraných z fronty
+            groupToMatch.forEach(player => {
                 const idx = waitingQueue.indexOf(player);
                 if (idx !== -1) waitingQueue.splice(idx, 1);
             });
 
             i--;
-            createMatchFromPlayers(matchedGroup);
+            createMatchFromPlayers(groupToMatch);
             broadcastQueueStatus();
+            break;
         }
     }
 }
 
 function createMatchFromPlayers(playersForMatch) {
     const matchId = 'match_' + matchCounter++;
-    const sortedPlayers = [...playersForMatch].sort((a, b) => b.tier - a.tier);
-
+    
     const redTeam = [];
     const blueTeam = [];
 
-    sortedPlayers.forEach((playerWs, index) => {
+    // Rozdelenie do tímov tak, aby členovia rovnakej čety boli VŽDY v rovnakom tíme
+    const processedParties = new Set();
+    let assignToRedFlag = true;
+
+    playersForMatch.forEach((playerWs) => {
         playerWs.matchId = matchId;
         playerWs.isDead = false;
 
@@ -485,16 +576,32 @@ function createMatchFromPlayers(playersForMatch) {
             tier: playerWs.tier
         };
 
-        const assignToRed = (index % 4 === 0 || index % 4 === 3);
+        if (playerWs.partyId) {
+            if (!processedParties.has(playerWs.partyId)) {
+                processedParties.add(playerWs.partyId);
+                // Celá četa dostane rovnaký tím
+                const partyTeam = assignToRedFlag ? 'red' : 'blue';
+                assignToRedFlag = !assignToRedFlag;
 
-        if (assignToRed) {
-            playerWs.team = 'red';
-            playerData.team = 'red';
-            redTeam.push(playerData);
+                const party = parties.get(playerWs.partyId);
+                if (party) {
+                    party.members.forEach(member => {
+                        if (playersForMatch.includes(member)) {
+                            member.team = partyTeam;
+                            const mData = { id: member.id, playerName: member.playerName, tankId: member.tankId, tier: member.tier, team: partyTeam };
+                            if (partyTeam === 'red') redTeam.push(mData); else blueTeam.push(mData);
+                        }
+                    });
+                }
+            }
         } else {
-            playerWs.team = 'blue';
-            playerData.team = 'blue';
-            blueTeam.push(playerData);
+            // Hráč bez čety
+            const soloTeam = assignToRedFlag ? 'red' : 'blue';
+            assignToRedFlag = !assignToRedFlag;
+
+            playerWs.team = soloTeam;
+            playerData.team = soloTeam;
+            if (soloTeam === 'red') redTeam.push(playerData); else blueTeam.push(playerData);
         }
     });
 
@@ -541,6 +648,7 @@ function broadcastQueueStatus() {
 }
 
 function handleDisconnect(ws) {
+    leaveParty(ws);
     removeFromQueue(ws);
     leaveCurrentMatch(ws);
 }
