@@ -131,6 +131,20 @@ function handleClientMessage(ws, data) {
             leaveParty(ws);
             break;
 
+        // --- AKTUALIZACE TANKU V ČETĚ ---
+        case 'UPDATE_PARTY_TANK':
+            if (data.tankId) {
+                ws.tankId = data.tankId;
+                if (ws.partyId) {
+                    const activeParty = parties.get(ws.partyId);
+                    if (activeParty) {
+                        sendPartyUpdate(activeParty);
+                        console.log(`[PARTY] Hráč ${ws.id} zmenil tank v čete na: ${ws.tankId}`);
+                    }
+                }
+            }
+            break;
+
         // --- OVĚŘENÍ JEDNORÁZOVÉHO KÓDU PRO PRÉMIOVÝ TANK ---
         case 'REDEEM_CODE':
             const targetTankId = data.tankId;
@@ -483,15 +497,13 @@ function runMatchmakingLoop() {
         const p1 = waitingQueue[i];
         if (!p1) continue;
 
-        // Ak je p1 v čete, zoberieme celú četu naraz ako základ pre match
         let groupToMatch = [];
         if (p1.partyId) {
             const party = parties.get(p1.partyId);
             if (party && party.leaderId === p1.id) {
-                // Ak je to líder, vezmeme všetkých členov čety, ktorí sú vo frontě
                 groupToMatch = party.members.filter(m => waitingQueue.includes(m));
             } else {
-                continue; // Nie je líder, preskočíme (bude vybavený cez lídra)
+                continue; 
             }
         } else {
             groupToMatch = [p1];
@@ -500,18 +512,15 @@ function runMatchmakingLoop() {
         let minTierInGroup = Math.min(...groupToMatch.map(m => m.tier));
         let maxTierInGroup = Math.max(...groupToMatch.map(m => m.tier));
 
-        // Hľadáme ďalších hráčov/čety do zápasu
         for (let j = 0; j < waitingQueue.length; j++) {
             const p2 = waitingQueue[j];
             if (!p2 || groupToMatch.includes(p2)) continue;
 
-            // Ak je p2 v čete, musíme zobrať celú četu naraz
             let p2Group = [p2];
             if (p2.partyId) {
                 const p2Party = parties.get(p2.partyId);
                 if (p2Party) {
                     p2Group = p2Party.members.filter(m => waitingQueue.includes(m));
-                    // Preskočíme duplicitné prechody členov rovnakej čety
                     if (p2Party.leaderId !== p2.id) continue;
                 }
             }
@@ -528,7 +537,6 @@ function runMatchmakingLoop() {
 
             if (!p1IsEndgame && (newMax - newMin) > 2) continue;
 
-            // Pridáme skupinu do matchu
             groupToMatch.push(...p2Group);
             minTierInGroup = newMin;
             maxTierInGroup = newMax;
@@ -537,11 +545,10 @@ function runMatchmakingLoop() {
         }
 
         if (groupToMatch.length % 2 !== 0 && groupToMatch.length >= 2) {
-            groupToMatch.pop(); // Udržujeme párny počet hráčov
+            groupToMatch.pop(); 
         }
 
         if (groupToMatch.length >= 2) {
-            // Odstránime všetkých vybraných z fronty
             groupToMatch.forEach(player => {
                 const idx = waitingQueue.indexOf(player);
                 if (idx !== -1) waitingQueue.splice(idx, 1);
@@ -561,7 +568,6 @@ function createMatchFromPlayers(playersForMatch) {
     const redTeam = [];
     const blueTeam = [];
 
-    // Rozdelenie do tímov tak, aby členovia rovnakej čety boli VŽDY v rovnakom tíme
     const processedParties = new Set();
     let assignToRedFlag = true;
 
@@ -579,7 +585,6 @@ function createMatchFromPlayers(playersForMatch) {
         if (playerWs.partyId) {
             if (!processedParties.has(playerWs.partyId)) {
                 processedParties.add(playerWs.partyId);
-                // Celá četa dostane rovnaký tím
                 const partyTeam = assignToRedFlag ? 'red' : 'blue';
                 assignToRedFlag = !assignToRedFlag;
 
@@ -595,7 +600,6 @@ function createMatchFromPlayers(playersForMatch) {
                 }
             }
         } else {
-            // Hráč bez čety
             const soloTeam = assignToRedFlag ? 'red' : 'blue';
             assignToRedFlag = !assignToRedFlag;
 
