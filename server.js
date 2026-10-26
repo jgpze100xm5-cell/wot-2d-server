@@ -1,5 +1,5 @@
 const { WebSocketServer, WebSocket } = require('ws');
-const fs = require('fs'); // <--- Přidán modul pro práci se soubory
+const fs = require('fs');
 
 // Render odovzdáva port automaticky cez premenné prostredia process.env.PORT
 const PORT = process.env.PORT || 8080;
@@ -35,7 +35,7 @@ setInterval(runBasesLoop, 100);
 
 wss.on('connection', (ws) => {
     ws.id = 'player_' + Math.random().toString(36).substr(2, 9);
-    ws.playerName = 'Player'; // Výchozí jméno
+    ws.playerName = 'Player';
     ws.matchId = null;
     ws.team = null;
     ws.tankId = "fcm36";
@@ -43,7 +43,7 @@ wss.on('connection', (ws) => {
     ws.joinedAt = 0;
     ws.isAlive = true;
     ws.isDead = false;
-    ws.partyId = null; // ID čety, v ktorej sa hráč nachádza
+    ws.partyId = null;
 
     console.log(`[CONNECT] Pripojený hráč: ${ws.id}`);
 
@@ -322,7 +322,6 @@ function leaveParty(ws) {
             parties.delete(ws.partyId);
             console.log(`[PARTY CLOSED] Četa ${ws.partyId} bola zrušená (prázdna).`);
         } else {
-            // Ak odišiel lídr, pridelíme vedenie ďalšiemu členovi
             if (party.leaderId === ws.id) {
                 party.leaderId = party.members[0].id;
             }
@@ -549,6 +548,43 @@ function runMatchmakingLoop() {
         }
 
         if (groupToMatch.length >= 2) {
+            // Predbežne rozdelíme do tímov
+            const testRed = [];
+            const testBlue = [];
+            const processedPartiesTest = new Set();
+            let testAssignRed = true;
+
+            groupToMatch.forEach(playerWs => {
+                if (playerWs.partyId) {
+                    if (!processedPartiesTest.has(playerWs.partyId)) {
+                        processedPartiesTest.add(playerWs.partyId);
+                        const teamName = testAssignRed ? 'red' : 'blue';
+                        testAssignRed = !testAssignRed;
+
+                        const p = parties.get(playerWs.partyId);
+                        if (p) {
+                            p.members.forEach(m => {
+                                if (groupToMatch.includes(m)) {
+                                    if (teamName === 'red') testRed.push(m); else testBlue.push(m);
+                                }
+                            });
+                        }
+                    }
+                } else {
+                    const teamName = testAssignRed ? 'red' : 'blue';
+                    testAssignRed = !testAssignRed;
+                    if (teamName === 'red') testRed.push(playerWs); else testBlue.push(playerWs);
+                }
+            });
+
+            // ===== KONTROLA PLNÝCH TÍMŮ =====
+            // Oba týmy (red i blue) musí obsahovat alespoň jednoho hráče,
+            // aby četa nikdy neskončila v bitvě sama bez soupeřů.
+            if (testRed.length === 0 || testBlue.length === 0) {
+                continue; // Počkáme ve frontě, dokud se nenajdou hráči do obou týmů
+            }
+            // ================================
+
             groupToMatch.forEach(player => {
                 const idx = waitingQueue.indexOf(player);
                 if (idx !== -1) waitingQueue.splice(idx, 1);
