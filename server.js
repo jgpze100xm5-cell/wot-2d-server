@@ -543,7 +543,7 @@ function runMatchmakingLoop() {
             if (groupToMatch.length >= 14) break;
         }
 
-        // Pokud je počet hráčů lichý, odebereme celou poslední skupinu (aby se četa netrhala)
+        // Pokud je celkový počet hráčů lichý, odebereme celou poslední skupinu
         while (groupToMatch.length % 2 !== 0 && groupToMatch.length >= 2) {
             const lastPlayer = groupToMatch[groupToMatch.length - 1];
             if (lastPlayer.partyId) {
@@ -554,34 +554,39 @@ function runMatchmakingLoop() {
         }
 
         if (groupToMatch.length >= 2) {
+            // Simulace rozřazení do týmů podle MÉNĚ OBSAZENÉHO TÝMU
             const testRed = [];
             const testBlue = [];
             const processedPartiesTest = new Set();
-            let testAssignRed = true;
 
             groupToMatch.forEach(playerWs => {
                 if (playerWs.partyId) {
                     if (!processedPartiesTest.has(playerWs.partyId)) {
                         processedPartiesTest.add(playerWs.partyId);
-                        const teamName = testAssignRed ? 'red' : 'blue';
-                        testAssignRed = !testAssignRed;
-
                         const p = parties.get(playerWs.partyId);
+                        
+                        // Přidáme četu do týmu, který má aktuálně méně hráčů
+                        const targetTeam = (testRed.length <= testBlue.length) ? testRed : testBlue;
+
                         if (p) {
                             p.members.forEach(m => {
                                 if (groupToMatch.includes(m)) {
-                                    if (teamName === 'red') testRed.push(m); else testBlue.push(m);
+                                    targetTeam.push(m);
                                 }
                             });
                         }
                     }
                 } else {
-                    const teamName = testAssignRed ? 'red' : 'blue';
-                    testAssignRed = !testAssignRed;
-                    if (teamName === 'red') testRed.push(playerWs); else testBlue.push(playerWs);
+                    // Přidáme sólo hráče do týmu, který má aktuálně méně hráčů
+                    if (testRed.length <= testBlue.length) {
+                        testRed.push(playerWs);
+                    } else {
+                        testBlue.push(playerWs);
+                    }
                 }
             });
 
+            // Kontrola, že ani jeden tým nezůstal prázdný
             if (testRed.length === 0 || testBlue.length === 0) {
                 continue; 
             }
@@ -606,9 +611,8 @@ function createMatchFromPlayers(playersForMatch) {
     const blueTeam = [];
 
     const processedParties = new Set();
-    let assignToRedFlag = true;
 
-    // Bezpečné zpracování celých bloků (četa jde vždy komplet do jednoho týmu)
+    // Dynamické vyvažování: Hráče a čety vždy posíláme do týmu s MÉNĚ členy
     playersForMatch.forEach((playerWs) => {
         if (redTeam.some(p => p.id === playerWs.id) || blueTeam.some(p => p.id === playerWs.id)) {
             return;
@@ -620,8 +624,9 @@ function createMatchFromPlayers(playersForMatch) {
         if (playerWs.partyId) {
             if (!processedParties.has(playerWs.partyId)) {
                 processedParties.add(playerWs.partyId);
-                const partyTeam = assignToRedFlag ? 'red' : 'blue';
-                assignToRedFlag = !assignToRedFlag;
+                
+                // Četa jde celá do týmu, který má méně hráčů
+                const partyTeam = (redTeam.length <= blueTeam.length) ? 'red' : 'blue';
 
                 const party = parties.get(playerWs.partyId);
                 if (party) {
@@ -649,8 +654,8 @@ function createMatchFromPlayers(playersForMatch) {
                 }
             }
         } else {
-            const soloTeam = assignToRedFlag ? 'red' : 'blue';
-            assignToRedFlag = !assignToRedFlag;
+            // Sólo hráč jde do týmu, který má méně hráčů
+            const soloTeam = (redTeam.length <= blueTeam.length) ? 'red' : 'blue';
 
             playerWs.team = soloTeam;
             const playerData = {
