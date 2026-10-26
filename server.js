@@ -79,6 +79,10 @@ function handleClientMessage(ws, data) {
     switch (data.type) {
         case 'JOIN_QUEUE':
             addToQueue(ws, data);
+            if (ws.partyId) {
+                const p = parties.get(ws.partyId);
+                if (p) sendPartyUpdate(p);
+            }
             break;
 
         case 'LEAVE_QUEUE':
@@ -193,7 +197,7 @@ function handleClientMessage(ws, data) {
         case 'PLAYER_MOVED':
             if (ws.isDead) return;
 
-            const updatedName = data.playerName || data.player_name || data.name || data.nickname;
+            const updatedName = data.player_name || data.playerName || data.name || data.nickname;
             if (updatedName && updatedName !== 'Player') {
                 ws.playerName = updatedName;
             }
@@ -203,6 +207,7 @@ function handleClientMessage(ws, data) {
                     type: 'PLAYER_UPDATE',
                     playerId: ws.id,
                     playerName: ws.playerName,
+                    player_name: ws.playerName,
                     team: ws.team,
                     x: data.x,
                     y: data.y,
@@ -335,7 +340,10 @@ function leaveParty(ws) {
 function sendPartyUpdate(party) {
     const memberData = party.members.map(m => ({
         id: m.id,
-        playerName: m.playerName,
+        player_name: m.playerName || "Player", // Pridáno pre GameMaker
+        playerName: m.playerName || "Player",
+        name: m.playerName || "Player",
+        nickname: m.playerName || "Player",
         tankId: m.tankId,
         tier: m.tier
     }));
@@ -422,7 +430,7 @@ function addToQueue(ws, data) {
 
     if (waitingQueue.includes(ws)) return;
 
-    const extractedName = data.playerName || data.player_name || data.name || data.nickname;
+    const extractedName = data.player_name || data.playerName || data.name || data.nickname;
     if (extractedName && extractedName !== "") {
         ws.playerName = String(extractedName);
     } else if (!ws.playerName || ws.playerName === "") {
@@ -554,7 +562,6 @@ function runMatchmakingLoop() {
         }
 
         if (groupToMatch.length >= 2) {
-            // Simulace rozřazení do týmů podle MÉNĚ OBSAZENÉHO TÝMU
             const testRed = [];
             const testBlue = [];
             const processedPartiesTest = new Set();
@@ -565,7 +572,6 @@ function runMatchmakingLoop() {
                         processedPartiesTest.add(playerWs.partyId);
                         const p = parties.get(playerWs.partyId);
                         
-                        // Přidáme četu do týmu, který má aktuálně méně hráčů
                         const targetTeam = (testRed.length <= testBlue.length) ? testRed : testBlue;
 
                         if (p) {
@@ -577,7 +583,6 @@ function runMatchmakingLoop() {
                         }
                     }
                 } else {
-                    // Přidáme sólo hráče do týmu, který má aktuálně méně hráčů
                     if (testRed.length <= testBlue.length) {
                         testRed.push(playerWs);
                     } else {
@@ -586,7 +591,6 @@ function runMatchmakingLoop() {
                 }
             });
 
-            // Kontrola, že ani jeden tým nezůstal prázdný
             if (testRed.length === 0 || testBlue.length === 0) {
                 continue; 
             }
@@ -612,7 +616,6 @@ function createMatchFromPlayers(playersForMatch) {
 
     const processedParties = new Set();
 
-    // Dynamické vyvažování: Hráče a čety vždy posíláme do týmu s MÉNĚ členy
     playersForMatch.forEach((playerWs) => {
         if (redTeam.some(p => p.id === playerWs.id) || blueTeam.some(p => p.id === playerWs.id)) {
             return;
@@ -625,7 +628,6 @@ function createMatchFromPlayers(playersForMatch) {
             if (!processedParties.has(playerWs.partyId)) {
                 processedParties.add(playerWs.partyId);
                 
-                // Četa jde celá do týmu, který má méně hráčů
                 const partyTeam = (redTeam.length <= blueTeam.length) ? 'red' : 'blue';
 
                 const party = parties.get(playerWs.partyId);
@@ -638,6 +640,7 @@ function createMatchFromPlayers(playersForMatch) {
                             
                             const mData = { 
                                 id: member.id, 
+                                player_name: member.playerName, 
                                 playerName: member.playerName, 
                                 tankId: member.tankId, 
                                 tier: member.tier, 
@@ -654,12 +657,12 @@ function createMatchFromPlayers(playersForMatch) {
                 }
             }
         } else {
-            // Sólo hráč jde do týmu, který má méně hráčů
             const soloTeam = (redTeam.length <= blueTeam.length) ? 'red' : 'blue';
 
             playerWs.team = soloTeam;
             const playerData = {
                 id: playerWs.id,
+                player_name: playerWs.playerName,
                 playerName: playerWs.playerName,
                 tankId: playerWs.tankId,
                 tier: playerWs.tier,
