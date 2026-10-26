@@ -543,12 +543,17 @@ function runMatchmakingLoop() {
             if (groupToMatch.length >= 14) break;
         }
 
-        if (groupToMatch.length % 2 !== 0 && groupToMatch.length >= 2) {
-            groupToMatch.pop(); 
+        // Pokud je počet hráčů lichý, odebereme celou poslední skupinu (aby se četa netrhala)
+        while (groupToMatch.length % 2 !== 0 && groupToMatch.length >= 2) {
+            const lastPlayer = groupToMatch[groupToMatch.length - 1];
+            if (lastPlayer.partyId) {
+                groupToMatch = groupToMatch.filter(m => m.partyId !== lastPlayer.partyId);
+            } else {
+                groupToMatch.pop();
+            }
         }
 
         if (groupToMatch.length >= 2) {
-            // Predbežne rozdelíme do tímov
             const testRed = [];
             const testBlue = [];
             const processedPartiesTest = new Set();
@@ -577,13 +582,9 @@ function runMatchmakingLoop() {
                 }
             });
 
-            // ===== KONTROLA PLNÝCH TÍMŮ =====
-            // Oba týmy (red i blue) musí obsahovat alespoň jednoho hráče,
-            // aby četa nikdy neskončila v bitvě sama bez soupeřů.
             if (testRed.length === 0 || testBlue.length === 0) {
-                continue; // Počkáme ve frontě, dokud se nenajdou hráči do obou týmů
+                continue; 
             }
-            // ================================
 
             groupToMatch.forEach(player => {
                 const idx = waitingQueue.indexOf(player);
@@ -607,16 +608,14 @@ function createMatchFromPlayers(playersForMatch) {
     const processedParties = new Set();
     let assignToRedFlag = true;
 
+    // Bezpečné zpracování celých bloků (četa jde vždy komplet do jednoho týmu)
     playersForMatch.forEach((playerWs) => {
+        if (redTeam.some(p => p.id === playerWs.id) || blueTeam.some(p => p.id === playerWs.id)) {
+            return;
+        }
+
         playerWs.matchId = matchId;
         playerWs.isDead = false;
-
-        const playerData = {
-            id: playerWs.id,
-            playerName: playerWs.playerName,
-            tankId: playerWs.tankId,
-            tier: playerWs.tier
-        };
 
         if (playerWs.partyId) {
             if (!processedParties.has(playerWs.partyId)) {
@@ -628,9 +627,23 @@ function createMatchFromPlayers(playersForMatch) {
                 if (party) {
                     party.members.forEach(member => {
                         if (playersForMatch.includes(member)) {
+                            member.matchId = matchId;
+                            member.isDead = false;
                             member.team = partyTeam;
-                            const mData = { id: member.id, playerName: member.playerName, tankId: member.tankId, tier: member.tier, team: partyTeam };
-                            if (partyTeam === 'red') redTeam.push(mData); else blueTeam.push(mData);
+                            
+                            const mData = { 
+                                id: member.id, 
+                                playerName: member.playerName, 
+                                tankId: member.tankId, 
+                                tier: member.tier, 
+                                team: partyTeam 
+                            };
+                            
+                            if (partyTeam === 'red') {
+                                redTeam.push(mData);
+                            } else {
+                                blueTeam.push(mData);
+                            }
                         }
                     });
                 }
@@ -640,8 +653,19 @@ function createMatchFromPlayers(playersForMatch) {
             assignToRedFlag = !assignToRedFlag;
 
             playerWs.team = soloTeam;
-            playerData.team = soloTeam;
-            if (soloTeam === 'red') redTeam.push(playerData); else blueTeam.push(playerData);
+            const playerData = {
+                id: playerWs.id,
+                playerName: playerWs.playerName,
+                tankId: playerWs.tankId,
+                tier: playerWs.tier,
+                team: soloTeam
+            };
+
+            if (soloTeam === 'red') {
+                redTeam.push(playerData);
+            } else {
+                blueTeam.push(playerData);
+            }
         }
     });
 
