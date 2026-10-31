@@ -237,7 +237,7 @@ function handleClientMessage(ws, data) {
             }
             break;
 
-        // --- PŘIDÁNO: PŘEPOSÍLANÍ VÝSTŘELU SEKUNDÁRNÍ ZBRANĚ ---
+        // --- PŘEPOSÍLANÍ VÝSTŘELU SEKUNDÁRNÍ ZBRANĚ OSTATNÍM ---
         case 'FIRE_SECONDARY':
             if (ws.isDead) return;
 
