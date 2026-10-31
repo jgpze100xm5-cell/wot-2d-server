@@ -229,6 +229,7 @@ function handleClientMessage(ws, data) {
                     playerId: ws.id,
                     tankId: data.tankId || ws.tankId,
                     bulletType: data.bulletType || data.bullet_obj || data.bulletObj || null,
+                    rocketId: data.rocketId || "",              // NOVÉ: unikátní ID rakety
                     x: data.x,
                     y: data.y,
                     angle: data.angle,
@@ -246,6 +247,7 @@ function handleClientMessage(ws, data) {
                     type: 'REMOTE_FIRE_SECONDARY',
                     playerId: ws.id,
                     tankId: data.tankId || ws.tankId,
+                    rocketId: data.rocketId || "",              // NOVÉ: unikátní ID rakety
                     x: data.x,
                     y: data.y,
                     dir: data.dir
@@ -261,9 +263,22 @@ function handleClientMessage(ws, data) {
                 broadcastToMatch(ws.matchId, {
                     type: 'REMOTE_ROCKET_STEER',
                     playerId: ws.id,
+                    rocketId: data.rocketId || "",              // NOVÉ: kterou raketu navádí
                     x: data.x,
                     y: data.y,
                     angle: data.angle
+                }, ws.id);
+            }
+            break;
+
+        // --- NOVÉ: MAJITEL ZNIČIL RAKETU -> ZNIČIT JI I OSTATNÍM ---
+        case 'ROCKET_DESTROY':
+            // Záměrně bez kontroly isDead (raketa může letět i po smrti střelce)
+            if (ws.matchId && matches.has(ws.matchId)) {
+                broadcastToMatch(ws.matchId, {
+                    type: 'REMOTE_ROCKET_DESTROY',
+                    playerId: ws.id,
+                    rocketId: data.rocketId || ""
                 }, ws.id);
             }
             break;
