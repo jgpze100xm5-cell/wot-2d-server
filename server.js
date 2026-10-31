@@ -253,6 +253,21 @@ function handleClientMessage(ws, data) {
             }
             break;
 
+        // --- PŘEPOSÍLANÍ NAVÁDĚNÍ RAKETY OSTATNÍM ---
+        case 'ROCKET_STEER':
+            if (ws.isDead) return;
+
+            if (ws.matchId && matches.has(ws.matchId)) {
+                broadcastToMatch(ws.matchId, {
+                    type: 'REMOTE_ROCKET_STEER',
+                    playerId: ws.id,
+                    x: data.x,
+                    y: data.y,
+                    angle: data.angle
+                }, ws.id);
+            }
+            break;
+
         case 'TAKE_DAMAGE':
             if (ws.matchId && matches.has(ws.matchId)) {
                 const targetHp = data.remainingHp !== undefined ? data.remainingHp : data.newHp;
