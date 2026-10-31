@@ -237,6 +237,22 @@ function handleClientMessage(ws, data) {
             }
             break;
 
+        // --- PŘIDÁNO: PŘEPOSÍLANÍ VÝSTŘELU SEKUNDÁRNÍ ZBRANĚ ---
+        case 'FIRE_SECONDARY':
+            if (ws.isDead) return;
+
+            if (ws.matchId && matches.has(ws.matchId)) {
+                broadcastToMatch(ws.matchId, {
+                    type: 'REMOTE_FIRE_SECONDARY',
+                    playerId: ws.id,
+                    tankId: data.tankId || ws.tankId,
+                    x: data.x,
+                    y: data.y,
+                    dir: data.dir
+                }, ws.id);
+            }
+            break;
+
         case 'TAKE_DAMAGE':
             if (ws.matchId && matches.has(ws.matchId)) {
                 const targetHp = data.remainingHp !== undefined ? data.remainingHp : data.newHp;
@@ -340,7 +356,7 @@ function leaveParty(ws) {
 function sendPartyUpdate(party) {
     const memberData = party.members.map(m => ({
         id: m.id,
-        player_name: m.playerName || "Player", // Pridáno pre GameMaker
+        player_name: m.playerName || "Player",
         playerName: m.playerName || "Player",
         name: m.playerName || "Player",
         nickname: m.playerName || "Player",
@@ -551,7 +567,6 @@ function runMatchmakingLoop() {
             if (groupToMatch.length >= 14) break;
         }
 
-        // Pokud je celkový počet hráčů lichý, odebereme celou poslední skupinu
         while (groupToMatch.length % 2 !== 0 && groupToMatch.length >= 2) {
             const lastPlayer = groupToMatch[groupToMatch.length - 1];
             if (lastPlayer.partyId) {
